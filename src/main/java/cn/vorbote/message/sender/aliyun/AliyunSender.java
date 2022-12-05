@@ -67,6 +67,70 @@ public final class AliyunSender implements IMessageSender<Map<String, Object>> {
         return Base64.getEncoder().encodeToString(signData);
     }
 
+    public MessageResponse sendWithGet(AliyunRegion region, MessageRequest<Map<String, Object>> request) throws Exception {
+        var df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        df.setTimeZone(new SimpleTimeZone(0, "GMT"));// 这里一定要设置GMT时区
+
+        var timestamp = df.format(new Date());
+
+        Map<String, String> paras = new java.util.HashMap<String, String>();
+        // 1. 系统参数
+        paras.put("SignatureMethod", "HMAC-SHA1");
+        paras.put("SignatureNonce", java.util.UUID.randomUUID().toString());
+        paras.put("AccessKeyId", userProfile.secretId());
+        paras.put("SignatureVersion", "1.0");
+        paras.put("Timestamp", timestamp);
+        paras.put("Format", "JSON");
+        paras.put("Action", "SendSms");
+        paras.put("Version", "2017-05-25");
+
+        // 2. 业务API参数，需要自行修改
+        paras.put("RegionId", region.getRegion());
+        paras.put("PhoneNumbers", request.getReceiver());
+        paras.put("SignName", sign);
+        paras.put("TemplateParam", objectMapper.writeValueAsString(request.getParams()));
+        paras.put("TemplateCode", request.getTemplateId());
+        // 3. 去除签名关键字Key
+        paras.remove("Signature");
+        // 4. 参数KEY排序
+        var sortParams = new TreeMap<>(paras);
+        // 5. 构造待签名的字符串
+        var it = sortParams.keySet().iterator();
+        var sortQueryStringTmp = new StringBuilder();
+        while (it.hasNext()) {
+            var key = it.next();
+            sortQueryStringTmp.append("&").append(specialUrlEncode(key)).append("=").append(specialUrlEncode(paras.get(key)));
+        }
+        var sortedQueryString = sortQueryStringTmp.substring(1);// 去除第一个多余的&符号
+        var stringToSign = "GET" + "&" +
+                specialUrlEncode("/") + "&" +
+                specialUrlEncode(sortedQueryString);
+        var sign = sign(userProfile.secretKey() + "&", stringToSign);
+        // 6. 签名最后也要做特殊URL编码
+        var signature = specialUrlEncode(sign);
+        // 最终打印出合法GET请求的URL
+        var url = "https://dysmsapi.aliyuncs.com/?Signature=" + signature + sortQueryStringTmp;
+
+        var webCall = new Request.Builder()
+                .url(url)
+                .get()
+                .build();
+        try (var webResp = okHttpClient.newCall(webCall).execute()) {
+            var jsonResp = Optional.of(webResp).map(Response::body).map((item) -> {
+                        try {
+                            return item.string();
+                        } catch (IOException e) {
+                            log.error(e.getMessage());
+                            return null;
+                        }
+                    })
+                    .orElse("{}");
+            log.trace(jsonResp);
+        }
+
+        return null;
+    }
+
     public MessageResponse send(AliyunRegion region, MessageRequest<Map<String, Object>> request) throws Exception {
         final var df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
         df.setTimeZone(new SimpleTimeZone(0, "GMT"));// 这里一定要设置GMT时区
